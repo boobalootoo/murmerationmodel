@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Audio Murmuration</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/addons/p5.sound.min.js"></script>
+    <style>body { margin: 0; overflow: hidden; background-color: black; }</style>
+</head>
+<body>
+    <script>
+        let flock = [], numBoids = 500, mic, fft;
+        let globalDirection, lastChangeTime = 0;
+        let cameraPosition;
+        let minDist = 10, maxDist = 50, maxSpread = 350;
+        let bassFactor = 1, trebleFactor = 1;
+        let murmurationVelocity;
+
+        function setup() {
+            createCanvas(window.innerWidth, window.innerHeight);
+            mic = new p5.AudioIn();
+            mic.start();
+            fft = new p5.FFT();
+            fft.setInput(mic);
+
+            globalDirection = p5.Vector.random2D().mult(0.3);
+            murmurationVelocity = p5.Vector.random2D().mult(0.5);
+            cameraPosition = createVector(width / 2, height / 2);
+
+            for (let i = 0; i < numBoids; i++) {
+                let x = random(width * 0.4, width * 0.6);
+                let y = random(height * 0.4, height * 0.6);
+                flock.push(new Boid(x, y));
+            }
+        }
+
+        function draw() {
+            background(135, 206, 250);
+
+            let spectrum = fft.analyze();
+            let bassEnergy = fft.getEnergy("bass");
+            let trebleEnergy = fft.getEnergy("treble");
+
+            bassFactor = map(bassEnergy, 0, 255, 0.8, 2.0);
+            trebleFactor = map(trebleEnergy, 0, 255, 0.8, 2.0);
+
+            // Murmuration velocity shifts with bass
+            murmurationVelocity.mult(bassFactor * 0.05);
+
+            // Change direction occasionally
+            if (frameCount - lastChangeTime > 900) {
+                globalDirection = p5.Vector.random2D().mult(random(0.5, 1.5));
+                murmurationVelocity = globalDirection.copy().mult(1.5);
+                lastChangeTime = frameCount;
+            }
+
+            let flockCenter = createVector(0, 0);
+            let maxDistance = 0;
+            for (let boid of flock) {
+                flockCenter.add(boid.position);
+            }
+            flockCenter.div(flock.length);
+            flockCenter.add(murmurationVelocity); // Move whole flock
+
+            // Track max spread
+            for (let boid of flock) {
+                let d = boid.position.dist(flockCenter);
+                if (d > maxDistance) maxDistance = d;
+            }
+
+            // Softly pull back if the flock spreads too far
+            if (maxDistance > maxSpread) {
+                for (let boid of flock) {
+                    let pullBack = p5.Vector.sub(flockCenter, boid.position);
+                    pullBack.setMag(0.05); // Keep flock together without clumping
+                    boid.acceleration.add(pullBack);
+                }
+            }
+
+            cameraPosition.lerp(flockCenter, 0.05);
+
+            for (let boid of flock) {
+                boid.flock(flock, bassFactor, trebleFactor);
+                boid.update();
+                boid.show();
+            }
+        }
+
+        class Boid {
+            constructor(x, y) {
+                this.position = createVector(x, y);
+                this.velocity = globalDirection.copy().mult(random(0.08, 0.12));
+                this.acceleration = createVector();
+                this.maxSpeed = 3;
+                this.maxForce = 0.05;
+            }
+
+            flock(boids, bassFactor, trebleFactor) {
+                let nearest = this.getNearest(boids, 5);
+                let alignment = this.align(nearest).mult(1.2);
+                let cohesion = this.cohesion(nearest).mult(bassFactor);
+                let separation = this.separation(nearest).mult(1.5);
+                
+                this.acceleration.add(alignment).add(cohesion).add(separation);
+                this.limitDistanceFromNeighbors(nearest);
+                this.velocity.mult(trebleFactor);
+            }
+
+            getNearest(boids, n) {
+                return boids
+                    .map(b => ({ boid: b, dist: this.position.dist(b.position) }))
+                    .sort((a, b) => a.dist - b.dist)
+                    .slice(1, n + 1)
+                    .map(b => b.boid);
+            }
+
+            align(boids) {
+                let avgVelocity = createVector();
+                if (boids.length > 0) {
+                    boids.forEach(b => avgVelocity.add(b.velocity));
+                    avgVelocity.div(boids.length).setMag(this.maxSpeed).sub(this.velocity).limit(this.maxForce);
+                }
+                return avgVelocity;
+            }
+
+            cohesion(boids) {
+                let center = createVector();
+                if (boids.length > 0) {
+                    boids.forEach(b => center.add(b.position));
+                    center.div(boids.length).sub(this.position).setMag(this.maxSpeed * 0.8);
+                    let steer = p5.Vector.sub(center, this.velocity).limit(this.maxForce);
+                    return steer;
+                }
+                return createVector(0, 0);
+            }
+
+            separation(boids) {
+                let avoid = createVector();
+                if (boids.length > 0) {
+                    boids.forEach(b => {
+                        let diff = p5.Vector.sub(this.position, b.position).div(this.position.dist(b.position));
+                        avoid.add(diff);
+                    });
+                    avoid.div(boids.length).setMag(this.maxSpeed).sub(this.velocity).limit(this.maxForce * 1.5);
+                }
+                return avoid;
+            }
+
+            limitDistanceFromNeighbors(boids) {
+                for (let b of boids) {
+                    let d = this.position.dist(b.position);
+                    if (d > maxDist * bassFactor) {
+                        let pullBack = p5.Vector.sub(b.position, this.position);
+                        pullBack.setMag(0.05);
+                        this.acceleration.add(pullBack);
+                    }
+                    if (d < minDist) {
+                        let pushAway = p5.Vector.sub(this.position, b.position);
+                        pushAway.setMag(0.05);
+                        this.acceleration.add(pushAway);
+                    }
+                }
+            }
+
+            update() {
+                this.velocity.add(this.acceleration).limit(this.maxSpeed);
+                this.position.add(this.velocity);
+                this.acceleration.mult(0);
+            }
+
+            show() {
+                push();
+                translate(this.position.x, this.position.y);
+                fill(0);
+                noStroke();
+                beginShape();
+                vertex(-4, -2);
+                vertex(0, -4);
+                vertex(4, -2);
+                vertex(1, 0);
+                vertex(4, 2);
+                vertex(0, 4);
+                vertex(-4, 2);
+                vertex(-1, 0);
+                endShape(CLOSE);
+                pop();
+            }
+        }
+    </script>
+</body>
+</html>
