@@ -6,16 +6,17 @@
     <title>Live Audio Murmuration</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/addons/p5.sound.min.js"></script>
-    <style>body { margin: 0; overflow: hidden; background-color: black; }</style>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: black; }
+        canvas { display: block; }
+    </style>
 </head>
 <body>
     <script>
         let flock = [], numBoids = 500, mic, fft;
-        let globalDirection, lastChangeTime = 0;
-        let cameraPosition;
-        let minDist = 10, maxDist = 50, maxSpread = 350;
-        let bassFactor = 1, trebleFactor = 1;
-        let murmurationVelocity;
+        let murmurationVelocity, cameraPosition;
+        let minDist = 10, maxDist = 50, maxSpread = 200;
+        let lastChangeTime = 0;
 
         function setup() {
             createCanvas(window.innerWidth, window.innerHeight);
@@ -24,8 +25,7 @@
             fft = new p5.FFT();
             fft.setInput(mic);
 
-            globalDirection = p5.Vector.random2D().mult(0.3);
-            murmurationVelocity = p5.Vector.random2D().mult(0.5);
+            murmurationVelocity = p5.Vector.random2D().mult(0.3);
             cameraPosition = createVector(width / 2, height / 2);
 
             for (let i = 0; i < numBoids; i++) {
@@ -35,54 +35,43 @@
             }
         }
 
+        function windowResized() {
+            resizeCanvas(window.innerWidth, window.innerHeight);
+        }
+
         function draw() {
             background(135, 206, 250);
 
             let spectrum = fft.analyze();
             let bassEnergy = fft.getEnergy("bass");
-            let trebleEnergy = fft.getEnergy("treble");
+            let bassFactor = map(bassEnergy, 0, 255, 0.05, 0.3);
 
-            bassFactor = map(bassEnergy, 0, 255, 0.8, 2.0);
-            trebleFactor = map(trebleEnergy, 0, 255, 0.8, 2.0);
-
-            // Murmuration velocity shifts with bass
-            murmurationVelocity.mult(bassFactor * 0.05);
-
-            // Change direction occasionally
-            if (frameCount - lastChangeTime > 900) {
-                globalDirection = p5.Vector.random2D().mult(random(0.5, 1.5));
-                murmurationVelocity = globalDirection.copy().mult(1.5);
-                lastChangeTime = frameCount;
-            }
+            murmurationVelocity.add(p5.Vector.random2D().mult(bassFactor));
+            murmurationVelocity.limit(1.2);
 
             let flockCenter = createVector(0, 0);
-            let maxDistance = 0;
             for (let boid of flock) {
                 flockCenter.add(boid.position);
             }
             flockCenter.div(flock.length);
-            flockCenter.add(murmurationVelocity); // Move whole flock
+            flockCenter.add(murmurationVelocity);
 
-            // Track max spread
             for (let boid of flock) {
-                let d = boid.position.dist(flockCenter);
-                if (d > maxDistance) maxDistance = d;
-            }
-
-            // Softly pull back if the flock spreads too far
-            if (maxDistance > maxSpread) {
-                for (let boid of flock) {
-                    let pullBack = p5.Vector.sub(flockCenter, boid.position);
-                    pullBack.setMag(0.05); // Keep flock together without clumping
-                    boid.acceleration.add(pullBack);
+                let toCenter = p5.Vector.sub(flockCenter, boid.position);
+                if (toCenter.mag() > maxSpread) {
+                    toCenter.setMag(0.05);
+                    boid.acceleration.add(toCenter);
                 }
             }
 
-            cameraPosition.lerp(flockCenter, 0.05);
+            // **New: Apply camera translation to follow the murmuration**
+            cameraPosition.lerp(flockCenter, 0.1);
+            translate(width / 2 - cameraPosition.x, height / 2 - cameraPosition.y);
 
             for (let boid of flock) {
-                boid.flock(flock, bassFactor, trebleFactor);
+                boid.flock(flock, bassFactor);
                 boid.update();
+                boid.position.add(murmurationVelocity);
                 boid.show();
             }
         }
@@ -90,13 +79,13 @@
         class Boid {
             constructor(x, y) {
                 this.position = createVector(x, y);
-                this.velocity = globalDirection.copy().mult(random(0.08, 0.12));
+                this.velocity = p5.Vector.random2D().mult(random(0.08, 0.12));
                 this.acceleration = createVector();
                 this.maxSpeed = 3;
                 this.maxForce = 0.05;
             }
 
-            flock(boids, bassFactor, trebleFactor) {
+            flock(boids, bassFactor) {
                 let nearest = this.getNearest(boids, 5);
                 let alignment = this.align(nearest).mult(1.2);
                 let cohesion = this.cohesion(nearest).mult(bassFactor);
@@ -104,7 +93,6 @@
                 
                 this.acceleration.add(alignment).add(cohesion).add(separation);
                 this.limitDistanceFromNeighbors(nearest);
-                this.velocity.mult(trebleFactor);
             }
 
             getNearest(boids, n) {
@@ -150,7 +138,7 @@
             limitDistanceFromNeighbors(boids) {
                 for (let b of boids) {
                     let d = this.position.dist(b.position);
-                    if (d > maxDist * bassFactor) {
+                    if (d > maxDist) {
                         let pullBack = p5.Vector.sub(b.position, this.position);
                         pullBack.setMag(0.05);
                         this.acceleration.add(pullBack);
